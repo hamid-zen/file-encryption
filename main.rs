@@ -2,10 +2,14 @@ use clap::{Parser, Subcommand}; // arg parsing
 use rpassword; // password prompting
 use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
-    Argon2, Params, PasswordHasher,
+    Argon2, PasswordHasher,
 }; // derivation
 use hex::ToHex; // debug purposes
-use std::fs::{File, OpenOptions};
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit},
+    Aes256Gcm, Key, Nonce
+}; // cipher
+use std::{fs::{File, OpenOptions}};
 use std::io::{self};
 
 /// Simple program to greet a person
@@ -41,6 +45,35 @@ fn open_file_rw(filename: &str) -> io::Result<File> {
         .open(filename)
 }
 
+fn encrypt(key_bytes: &[u8], plaintext: String) -> Vec<u8> {
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let cipher = Aes256Gcm::new(key);
+    let ciphered_data = cipher.encrypt(&nonce, plaintext.as_bytes())
+        .expect("failed to encrypt"); // TODO: gerer ça
+
+    // combining nonce and encrypted data together
+    let mut encrypted_data: Vec<u8> = nonce.to_vec();
+    encrypted_data.extend_from_slice(&ciphered_data);
+    encrypted_data
+}
+
+fn decrypt(key_bytes: &[u8], encrypted_data: Vec<u8>) -> String {
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+
+
+    let (nonce_arr, ciphered_data) = encrypted_data.split_at(12);
+    let nonce = Nonce::from_slice(nonce_arr);
+
+    let cipher = Aes256Gcm::new(key);
+
+    let plaintext = cipher.decrypt(nonce, ciphered_data)
+        .expect("failed to decrypt data"); //TODO gerer ça
+
+    String::from_utf8(plaintext)
+        .expect("failed to convert vector of bytes to string") //TODO gerer ça
+}
+
 /*Comment gérer le mdp : */
 // On a un mdp qu'on doit gérer de façon sécuriser à la fois à l'input
 // et durant le lifetime de la variable de mdp, il faut la laisser 
@@ -68,12 +101,17 @@ fn main() {
                     let hashed = Argon2::default()
                         .hash_password(password.as_bytes(), &salt)
                         .unwrap();
+                    let key = hashed.hash.unwrap();
 
-                    let data = hashed.hash.unwrap();
+                    // testing encryption
+                    let plaintext = "backendengineer.io".to_string();
+                    let encrypted = encrypt(key.as_bytes(), plaintext);
+                    println!("encrypted: {:?}", encrypted.encode_hex::<String>());
 
-                    assert_eq!(data.len(), 32);
+                    // testing decryption
+                    let decrypted = decrypt(key.as_bytes(), encrypted);
+                    println!("decrypted: {:?}", decrypted);
 
-                    println!("{}", data.encode_hex::<String>());
                 }
                 Err(e) => {
                     println!("Ouverture du fichier {} impossible, erreur : {}", filename, e);

@@ -9,6 +9,7 @@ clap = { version = "4.5.31", features = ["derive"] }
 rpassword = "7.3.1"
 rand_core = { version = "*", features = ["getrandom"] }
 hex = "0.4.3"
+aes-gcm = "0.10.3"
 
 [[bin]]
 name = "file-encryption"
