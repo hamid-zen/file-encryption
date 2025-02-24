@@ -4,30 +4,35 @@ use std::io::{self};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version="1.0", about="Simple program to encrypt/decrypt a file. Made by @ZizouChrist and @ResistantCorse", long_about=None)]
 struct Args {
     #[command(subcommand)]
     mode: Mode,
+
+    #[arg(short, default_value_t = String::from("output.txt"))]
+    output: String,
 }
 
 #[derive(Subcommand, Debug)] 
 enum Mode {
+    /// Encrypt a file
     Encrypt {
-        #[arg(short, long)]
+        #[arg()]
         filename: String,
     },
+    /// Decrypt a file
     Decrypt {
-        #[arg(short, long)]
+        #[arg()]
         filename: String,
     },
 }
 
 fn open_file_rw(filename: &str) -> io::Result<File> {
     OpenOptions::new()
-        .read(true)   // Lecture autorisée
-        .write(true)  // Écriture autorisée
-        .create(true) // Crée le fichier s'il n'existe pas
-        .open(filename) // Ouvre le fichier ou crée-le
+        .read(true)   // lecture
+        .write(true)  // ecriture
+        .create(true) // le creer si il existe pas 
+        .open(filename)
 }
 
 /*Comment gérer le mdp : */
@@ -44,11 +49,10 @@ fn main() {
     // open input file
     
     match args.mode {
-        /*Cipher mode*/
         Mode::Encrypt {filename} => {
-            // open the file and check if exists
+            // on ouvre le fichier
             match open_file_rw(&filename) {
-                Ok(_f) => {
+                Ok(_file) => {
                     println!("Fichier '{}' ouvert pour le chiffrement.", filename);
                 }
                 Err(e) => {
@@ -57,10 +61,9 @@ fn main() {
             }
         }
 
-        /*Decrypt mod*/
         Mode::Decrypt {filename} => {
             match open_file_rw(&filename) {
-                Ok(_f) => {
+                Ok(_file) => {
                     println!("Fichier '{}' ouvert pour le chiffrement.", filename);
                 }
                 Err(e) => {
