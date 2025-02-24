@@ -1,4 +1,10 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand}; // arg parsing
+use rpassword; // password prompting
+use argon2::{
+    password_hash::{SaltString, rand_core::OsRng},
+    Argon2, Params, PasswordHasher,
+}; // derivation
+use hex::ToHex; // debug purposes
 use std::fs::{File, OpenOptions};
 use std::io::{self};
 
@@ -54,6 +60,20 @@ fn main() {
             match open_file_rw(&filename) {
                 Ok(_file) => {
                     println!("Fichier '{}' ouvert pour le chiffrement.", filename);
+
+                    let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
+
+                    // derive a key from the password
+                    let salt = SaltString::generate(&mut OsRng);
+                    let hashed = Argon2::default()
+                        .hash_password(password.as_bytes(), &salt)
+                        .unwrap();
+
+                    let data = hashed.hash.unwrap();
+
+                    assert_eq!(data.len(), 32);
+
+                    println!("{}", data.encode_hex::<String>());
                 }
                 Err(e) => {
                     println!("Ouverture du fichier {} impossible, erreur : {}", filename, e);
@@ -65,6 +85,9 @@ fn main() {
             match open_file_rw(&filename) {
                 Ok(_file) => {
                     println!("Fichier '{}' ouvert pour le chiffrement.", filename);
+
+                    let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
+
                 }
                 Err(e) => {
                     println!("Ouverture du fichier {} impossible, erreur : {}", filename, e);
