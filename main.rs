@@ -11,7 +11,7 @@ use rpassword; // password prompting
 use std::io::{self, Read};
 use std::{
     fs::{File, OpenOptions},
-    io::{Seek, Write},
+    io::Write,
 };
 
 /// Simple program to greet a person
@@ -20,9 +20,6 @@ use std::{
 struct Args {
     #[command(subcommand)]
     mode: Mode,
-
-    #[arg(short, default_value_t = String::from("output.txt"))]
-    output: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -30,12 +27,18 @@ enum Mode {
     /// Encrypt a file
     Encrypt {
         #[arg()]
-        filename: String,
+        input: String,
+
+        #[arg(short, default_value_t = String::from("output.txt"))]
+        output: String,
     },
     /// Decrypt a file
     Decrypt {
         #[arg()]
-        filename: String,
+        input: String,
+
+        #[arg(short, default_value_t = String::from("output.txt"))]
+        output: String,
     },
 }
 
@@ -48,6 +51,7 @@ fn open_file_rw(filename: &str) -> io::Result<File> {
 }
 
 const BUFFER_SIZE: usize = 128;
+const NONCE_SIZE: usize = 12;
 
 fn encrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File) -> () {
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
@@ -79,7 +83,7 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
     let cipher = Aes256Gcm::new(key);
 
     // we need to extract the nonce
-    let mut nonce_buff = [0_u8; 12]; // TODO replacer la taille par un const
+    let mut nonce_buff = [0_u8; NONCE_SIZE];
     input_file.read_exact(&mut nonce_buff).unwrap(); // TODO voir pourquoi ? ne marche pas + peut etre utiliser read et verifier la taille lue
     let nonce = Nonce::from_slice(&nonce_buff[..12]);
 
@@ -88,7 +92,8 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
     loop {
         let read_count = input_file.read(&mut buffer).unwrap();
 
-        let deciphered_data = cipher.decrypt(nonce, &buffer[..read_count])
+        let deciphered_data = cipher
+            .decrypt(nonce, &buffer[..read_count])
             .expect("failed to encrypt"); // TODO: gerer ça
 
         output_file.write(&deciphered_data).unwrap();
@@ -97,22 +102,6 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
             break;
         }
     }
-}
-
-fn decrypt(key_bytes: &[u8], encrypted_data: Vec<u8>) -> String {
-    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-
-    let (nonce_arr, ciphered_data) = encrypted_data.split_at(12);
-    let nonce = Nonce::from_slice(nonce_arr);
-
-    let cipher = Aes256Gcm::new(key);
-
-    let plaintext = cipher
-        .decrypt(nonce, ciphered_data)
-        .expect("failed to decrypt data"); //TODO gerer ça
-
-    String::from_utf8(plaintext).expect("failed to convert vector of bytes to string")
-    //TODO gerer ça
 }
 
 /*Comment gérer le mdp : */
@@ -125,14 +114,55 @@ fn decrypt(key_bytes: &[u8], encrypted_data: Vec<u8>) -> String {
 fn main() {
     // Parse the user input
     let args = Args::parse();
-    // open input file
 
+    // TODO: verifier mot de passe
     match args.mode {
-        Mode::Encrypt { filename } => {
+        Mode::Encrypt { input, output } => {
             // on ouvre le fichier
-            match open_file_rw(&filename) {
-                Ok(_file) => {
-                    println!("Fichier '{}' ouvert pour le chiffrement.", filename);
+            match open_file_rw(&input) {
+                Ok(mut input_file) => {
+
+                    let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
+
+                    // derive a key from the password
+                    let salt = SaltString::generate(&mut OsRng);
+
+                    let hashed = Argon2::default()
+                        .hash_password(password.as_bytes(), &salt)
+                        .unwrap();
+                    let key = hashed.hash.unwrap();
+
+                    let _output_file = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .open(&output);
+
+                    match _output_file {
+                        Ok(mut output_file) => {
+                            encrypt_file(key.as_bytes(), &mut input_file, &mut output_file);
+                        }
+                        Err(e) => {
+                            println!(
+                                "Ouverture du fichier {} impossible, erreur : {}",
+                                output, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "Ouverture du fichier {} impossible, erreur : {}",
+                        input, e
+                    );
+                }
+            }
+        }
+
+        Mode::Decrypt { input, output } =>
+            // on ouvre le fichier
+            match open_file_rw(&input) {
+                Ok(mut input_file) => {
 
                     let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
 
@@ -143,51 +173,30 @@ fn main() {
                         .unwrap();
                     let key = hashed.hash.unwrap();
 
-                    // testing encryption
-                    let mut input_file = OpenOptions::new()
-                        .read(true)
-                        .open("test_file.txt")
-                        .unwrap();
-                    let mut encrypt_output = OpenOptions::new()
+                    let _output_file = OpenOptions::new()
                         .read(true)
                         .write(true)
                         .create(true)
-                        .open("encrypt_output.txt")
-                        .unwrap();
-                    encrypt_file(key.as_bytes(), &mut input_file, &mut encrypt_output);
+                        .open(&output);
 
-                    // testing decryption
-                    encrypt_output.rewind().unwrap();
-                    let mut decrypt_output = OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .open("decrypt_output.txt")
-                        .unwrap();
-                    decrypt_file(key.as_bytes(), &mut encrypt_output, &mut decrypt_output);
-                    // let decrypted = decrypt(key.as_bytes(), encrypted);
-                    // println!("decrypted: {:?}", decrypted);
-                }
+                    match _output_file {
+                        Ok(mut output_file) => {
+                            decrypt_file(key.as_bytes(), &mut input_file, &mut output_file);
+                        }
+                        Err(e) => {
+                            println!(
+                                "Ouverture du fichier {} impossible, erreur : {}",
+                                output, e
+                            );
+                        }
+                    }
+                },
                 Err(e) => {
                     println!(
                         "Ouverture du fichier {} impossible, erreur : {}",
-                        filename, e
+                        input, e
                     );
                 }
             }
-        }
-
-        Mode::Decrypt { filename } => match open_file_rw(&filename) {
-            Ok(_file) => {
-                println!("Fichier '{}' ouvert pour le chiffrement.", filename);
-
-                let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
-            }
-            Err(e) => {
-                println!(
-                    "Ouverture du fichier {} impossible, erreur : {}",
-                    filename, e
-                );
-            }
-        },
     }
 }
