@@ -7,8 +7,9 @@ use argon2::{
     Argon2, PasswordHasher,
 }; // derivation
 use clap::{Parser, Subcommand}; // arg parsing
-use rpassword; // password prompting
-use std::io::{self, Read};
+use rpassword; use core::str;
+// password prompting
+use std::io::{self, Read, Seek};
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -126,7 +127,6 @@ fn main() {
 
                     // derive a key from the password
                     let salt = SaltString::generate(&mut OsRng);
-
                     let hashed = Argon2::default()
                         .hash_password(password.as_bytes(), &salt)
                         .unwrap();
@@ -140,6 +140,12 @@ fn main() {
 
                     match _output_file {
                         Ok(mut output_file) => {
+
+                            // we add the salt
+                            println!("position: {:?}", output_file.stream_position());
+                            let _ = output_file.write(salt.as_str().as_bytes());
+                            println!("position: {:?}", output_file.stream_position());
+                            println!("salt: {:?}", salt.as_str().as_bytes());
                             encrypt_file(key.as_bytes(), &mut input_file, &mut output_file);
                         }
                         Err(e) => {
@@ -166,8 +172,12 @@ fn main() {
 
                     let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
 
+                    // we get the salt from the input file
+                    let mut salt_buff = [0_u8; 22];
+                    let _ = input_file.read_exact(&mut salt_buff); // TODO verifier que la lecture s'est bien faite
+                    let salt = SaltString::from_b64(std::str::from_utf8(&mut salt_buff).unwrap()).unwrap(); // TODO faire des bonnes verifs
+                    
                     // derive a key from the password
-                    let salt = SaltString::generate(&mut OsRng);
                     let hashed = Argon2::default()
                         .hash_password(password.as_bytes(), &salt)
                         .unwrap();
