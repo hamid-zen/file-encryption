@@ -9,7 +9,7 @@ use argon2::{
 use clap::{Parser, Subcommand}; // arg parsing
 use rpassword; use core::str;
 // password prompting
-use std::io::{self, Read, Seek};
+use std::io::{self, Read};
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -69,7 +69,7 @@ fn encrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
 
         let ciphered_data = cipher
             .encrypt(&nonce, &buffer[..read_count])
-            .expect("failed to encrypt"); // TODO: gerer ça
+            .expect("Failed to encrypt");
 
         output_file.write(&ciphered_data).unwrap();
 
@@ -85,7 +85,7 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
 
     // we need to extract the nonce
     let mut nonce_buff = [0_u8; NONCE_SIZE];
-    input_file.read_exact(&mut nonce_buff).unwrap(); // TODO voir pourquoi ? ne marche pas + peut etre utiliser read et verifier la taille lue
+    input_file.read_exact(&mut nonce_buff).unwrap();
     let nonce = Nonce::from_slice(&nonce_buff[..12]);
 
     // reading the file using a buffer
@@ -95,7 +95,7 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
 
         let deciphered_data = cipher
             .decrypt(nonce, &buffer[..read_count])
-            .expect("failed to encrypt"); // TODO: gerer ça
+            .expect("Wrong password");
 
         output_file.write(&deciphered_data).unwrap();
 
@@ -105,18 +105,12 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File)
     }
 }
 
-/*Comment gérer le mdp : */
-// On a un mdp qu'on doit gérer de façon sécuriser à la fois à l'input
-// et durant le lifetime de la variable de mdp, il faut la laisser
-// la moins longtemps possible en vie.
-// On en calcule une clé dérivée qui est le hash(mdp)
-// On utilise un chiffrement symértrique avec pour clé le hash du mdp
-
+//NOTE: On a eu un choix a faire dans ce projet: On a utilisé un chiffrement par chunks oû on stocke le salt et le nonce dans le "header" du fichier chiffré ce qui fait qu'on ne peut pas utiliser le meme fichier a chiffrer pour l'output
+// Une autre façon de le faire est de charger tout le fichier d'input dans la memoire et d'ainsi pouvoir overwrite le fichier
 fn main() {
     // Parse the user input
     let args = Args::parse();
 
-    // TODO: verifier mot de passe
     match args.mode {
         Mode::Encrypt { input, output } => {
             // on ouvre le fichier
@@ -142,10 +136,7 @@ fn main() {
                         Ok(mut output_file) => {
 
                             // we add the salt
-                            println!("position: {:?}", output_file.stream_position());
                             let _ = output_file.write(salt.as_str().as_bytes());
-                            println!("position: {:?}", output_file.stream_position());
-                            println!("salt: {:?}", salt.as_str().as_bytes());
                             encrypt_file(key.as_bytes(), &mut input_file, &mut output_file);
                         }
                         Err(e) => {
@@ -172,10 +163,12 @@ fn main() {
 
                     let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
 
+                    // Note: an encrypted file is structured like this: the 22 first bytes are the salt, 
+                    // then we have the rest of the file (raw file)
                     // we get the salt from the input file
                     let mut salt_buff = [0_u8; 22];
-                    let _ = input_file.read_exact(&mut salt_buff); // TODO verifier que la lecture s'est bien faite
-                    let salt = SaltString::from_b64(std::str::from_utf8(&mut salt_buff).unwrap()).unwrap(); // TODO faire des bonnes verifs
+                    let _ = input_file.read_exact(&mut salt_buff).expect("error when reading salt");
+                    let salt = SaltString::from_b64(std::str::from_utf8(&mut salt_buff).unwrap()).unwrap();
                     
                     // derive a key from the password
                     let hashed = Argon2::default()
