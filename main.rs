@@ -176,7 +176,7 @@ fn main() {
         {
             // we open the input file to determine the number of files to decrypt
             let mut _input: Result<File, io::Error> = OpenOptions::new().read(true).open(&input);
-
+            
             match _input {
                 Ok(mut input_file) => {
                     let mut num_files_bytes = [0u8; 4];
