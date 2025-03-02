@@ -1,5 +1,5 @@
 [package]
-name = "file-encryption"
+name = "tool"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,5 +12,5 @@ hex = "0.4.3"
 aes-gcm = "0.10.3"
 
 [[bin]]
-name = "file-encryption"
+name = "tool"
 path = "main.rs"
