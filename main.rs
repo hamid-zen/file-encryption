@@ -117,13 +117,6 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File,
     }
 }
 
-/*Comment gérer le mdp : */
-// On a un mdp qu'on doit gérer de façon sécuriser à la fois à l'input
-// et durant le lifetime de la variable de mdp, il faut la laisser
-// la moins longtemps possible en vie.
-// On en calcule une clé dérivée qui est le hash(mdp)
-// On utilise un chiffrement symértrique avec pour clé le hash du mdp
-
 // NOTE: La structure d'un fichier chiffré est la suivante: les 4 premiers octets sont pour le nombre de fichiers chiffrés
 // les 8 suivants sont la taille du 1 er fichier chiffré, puis 22 octets pour le salt 12 pour le nonce et puis le fichier
 // chiffré brut (et ainsi de suite: taille+salt+nonce)
@@ -181,11 +174,13 @@ fn main() {
                                 encrypt_file(key.as_bytes(), &mut input_file, &mut output);
                             }
                             Err(e) => {
+                                println!("Impossible to open file: {}, error : {}", input, e);
                             }
                         }
                     }
                 }
                 Err(e) => {
+                    println!("Impossible to open file: {}, error : {}", output, e);
                 }
             }
         }
@@ -240,6 +235,7 @@ fn main() {
                     }
                 }
                 Err(e) => {
+                    println!("Impossible to open file: {}, error : {}", input, e);
                 }
             }
         }
