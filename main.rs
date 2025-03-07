@@ -10,10 +10,14 @@ use clap::{Parser, Subcommand}; // arg parsing
 use core::str;
 use rpassword;
 // password prompting
-use std::{io::{self, Read}, path::Path};
+use color_eyre::eyre::{self, Context, Result};
 use std::{
     fs::{File, OpenOptions},
     io::Write,
+};
+use std::{
+    io::{self, Read},
+    path::Path,
 };
 
 #[derive(Parser, Debug)]
@@ -47,44 +51,50 @@ enum Mode {
     },
 }
 
-fn open_file_rw(filename: &str) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true) // lecture
-        .write(true) // ecriture
-        .create(true) // le creer si il existe pas
-        .open(filename)
-}
-
 const BUFFER_SIZE: usize = 128;
 const NONCE_SIZE: usize = 12;
 const TAGSIZE: usize = 16;
 
-fn encrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File) -> () {
+fn encrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File) -> Result<()> {
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let cipher = Aes256Gcm::new(key);
 
     // putting the nonce in the ouput
-    output_file.write(&nonce.as_slice()).unwrap();
-    
+    output_file
+        .write(&nonce.as_slice())
+        .wrap_err("unable to write nonce")?;
+
     // reading the file using a buffer
     let mut buffer = [0_u8; BUFFER_SIZE];
     loop {
         // bytes to read (either a full buffer or there isnt enough bytes to do so)
-        let read_count = input_file.read(&mut buffer).unwrap();
+        let read_count = input_file
+            .read(&mut buffer)
+            .wrap_err("unable to read file")?;
 
         let ciphered_data = cipher
             .encrypt(&nonce, &buffer[..read_count])
-            .expect("failed to encrypt");
-        output_file.write(&ciphered_data).unwrap();
+            .map_err(|e| eyre::eyre!(e))
+            .wrap_err("unable to encrypt")?;
+
+        output_file
+            .write(&ciphered_data)
+            .wrap_err("unable to write into file")?;
 
         if read_count != BUFFER_SIZE {
             break;
         }
     }
+    Ok(())
 }
 
-fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File, file_size: u64) -> () {
+fn decrypt_file(
+    key_bytes: &[u8],
+    input_file: &mut File,
+    output_file: &mut File,
+    file_size: u64,
+) -> Result<()> {
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let cipher = Aes256Gcm::new(key);
 
@@ -93,104 +103,98 @@ fn decrypt_file(key_bytes: &[u8], input_file: &mut File, output_file: &mut File,
     input_file.read_exact(&mut nonce_buff).unwrap();
     let nonce = Nonce::from_slice(&nonce_buff[..12]);
 
-    let mut size_remaining = file_size as usize; // current file size remaining to be read 
-    // reading the file using a buffer
+    let mut size_remaining = file_size as usize; // current file size remaining to be read
+                                                 // reading the file using a buffer
     loop {
         // bytes to read (either a full buffer or there isnt enough bytes to do so)
         let mut buffer = vec![0u8; std::cmp::min(size_remaining, BUFFER_SIZE)];
         let read_count = input_file.read(&mut buffer).unwrap();
 
-        let deciphered_data = cipher.decrypt(nonce, &buffer[..read_count]);
-        match deciphered_data {
-            Ok(deciphered_chunk) => {
-                output_file.write(&deciphered_chunk).unwrap();
-            }
-            Err(_) => {
-                return;
-            }
-        }
+        let deciphered_data = cipher
+            .decrypt(nonce, &buffer[..read_count])
+            .map_err(|e| eyre::eyre!(e))
+            .wrap_err("failed to decrypt")?;
+        output_file.write(&deciphered_data).unwrap();
 
         if read_count != std::cmp::min(size_remaining, BUFFER_SIZE) {
             break;
         }
         size_remaining -= read_count;
     }
+    Ok(())
 }
 
 // NOTE: La structure d'un fichier chiffré est la suivante: les 4 premiers octets sont pour le nombre de fichiers chiffrés
 // les 8 suivants sont la taille du 1 er fichier chiffré, puis 22 octets pour le salt 12 pour le nonce et puis le fichier
 // chiffré brut (et ainsi de suite: taille+salt+nonce)
-fn main() {
+fn main() -> Result<()> {
+    color_eyre::install()?;
+
     // Parse the user input
     let args = Args::parse();
 
     // prompt for a password
-    let password = rpassword::prompt_password("Enter the passphrase: ").unwrap();
+    let password = rpassword::prompt_password("Enter the passphrase: ")
+        .wrap_err("Error when reading password")?;
 
     match args.mode {
         Mode::Encrypt { files, output } => {
             // open the output file
-            let mut _output_file: Result<File, io::Error> =
-                OpenOptions::new().write(true).create(true).open(&output);
+            let mut output_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&output)
+                .wrap_err("unable to create output file")?;
 
-            match _output_file {
-                Ok(mut output) => {
-                    // we write the number of files that we encrypted in the header
-                    let number_of_files = files.as_ref().unwrap().len() as u32;
-                    let _ = output
-                        .write_all(&number_of_files.to_le_bytes())
-                        .expect("error when writing metadata");
+            // we write the number of files that we encrypted in the header
+            let number_of_files = files.as_ref().unwrap().len() as u32;
+            let _ = output_file
+                .write_all(&number_of_files.to_le_bytes())
+                .wrap_err("unable to write number of files")?;
 
-                    // derive a key from the password
-                    let salt = SaltString::generate(&mut OsRng);
-                    let hashed = Argon2::default()
-                        .hash_password(password.as_bytes(), &salt)
-                        .unwrap();
-                    let key = hashed.hash.unwrap();
+            // derive a key from the password
+            let salt = SaltString::generate(&mut OsRng);
+            let hashed = Argon2::default()
+                .hash_password(password.as_bytes(), &salt)
+                .unwrap();
+            let key = hashed.hash.unwrap();
 
-                    // write the salt into the file
-                    let salt_buffer = salt.as_ref();
-                    let _ = output
-                        .write_all(salt_buffer.as_bytes())
-                        .expect("error when writing salt");
+            // write the salt into the file
+            let salt_buffer = salt.as_ref();
+            let _ = output_file
+                .write_all(salt_buffer.as_bytes())
+                .wrap_err("unable to write salt")?;
 
-                    // for each file we encrypt and we append it to the file
-                    for input in files.unwrap() {
-                        // we open the file
-                        match open_file_rw(&input) {
-                            Ok(mut input_file) => {
+            // for each file we encrypt and we append it to the file
+            for input in files.unwrap() {
+                // we open the file
+                let mut input_file = OpenOptions::new()
+                    .read(true)
+                    .open(&input)
+                    .wrap_err("unable to open input file")?;
 
-                                let file_length = input_file
-                                    .metadata()
-                                    .expect("error when getting file metadata")
-                                    .len();
-                                // encrypted file length is calculated using the input file size to wich we add the 
-                                // size of the tag that is put at the end of each chunk (there are file_length/BUFFERSIZE chunks)
-                                let encrypted_file_length = file_length as usize+((file_length as usize/BUFFER_SIZE)+1)*TAGSIZE;
+                let file_length = input_file
+                    .metadata()
+                    .wrap_err("unable to get file metadata")?
+                    .len();
+                // encrypted file length is calculated using the input file size to wich we add the
+                // size of the tag that is put at the end of each chunk (there are file_length/BUFFERSIZE chunks)
+                let encrypted_file_length =
+                    file_length as usize + ((file_length as usize / BUFFER_SIZE) + 1) * TAGSIZE;
 
-                                let _ = output
-                                    .write_all(&encrypted_file_length.to_le_bytes())
-                                    .expect("error when writing metadata to file");
-                                encrypt_file(key.as_bytes(), &mut input_file, &mut output);
-                            }
-                            Err(e) => {
-                                println!("Impossible to open file: {}, error : {}", input, e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Impossible to open file: {}, error : {}", output, e);
-                }
+                let _ = output_file
+                    .write_all(&encrypted_file_length.to_le_bytes())
+                    .wrap_err("unable to write file length")?;
+                encrypt_file(key.as_bytes(), &mut input_file, &mut output_file)?;
             }
         }
 
         Mode::Decrypt { input, output } => {
-
             let output_path = Path::new(&output);
 
             // we create an output folder
-            let _ = std::fs::create_dir_all(output_path).expect("Error when creating the output folder");
+            let _ = std::fs::create_dir_all(output_path)
+                .expect("Error when creating the output folder");
 
             // we open the input file
             let mut _input_file: Result<File, io::Error> =
@@ -228,10 +232,10 @@ fn main() {
                             .read(true)
                             .write(true)
                             .create(true)
-                            .open(output_path.join(("file".to_owned())+&(i.to_string())+".txt"))
+                            .open(output_path.join(("file".to_owned()) + &(i.to_string()) + ".txt"))
                             .expect("error when creating output file");
 
-                        decrypt_file(key.as_bytes(), &mut input_file, &mut output_file, file_size);
+                        decrypt_file(key.as_bytes(), &mut input_file, &mut output_file, file_size)?;
                     }
                 }
                 Err(e) => {
@@ -240,4 +244,5 @@ fn main() {
             }
         }
     }
+    Ok(())
 }
