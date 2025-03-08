@@ -11,6 +11,7 @@ rand_core = { version = "*", features = ["getrandom"] }
 hex = "0.4.3"
 aes-gcm = "0.10.3"
 color-eyre = "0.6.3"
+passwords = "3.1.16"
 
 [[bin]]
 name = "tool"

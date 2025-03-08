@@ -7,18 +7,19 @@ use argon2::{
     Argon2, PasswordHasher,
 }; // derivation
 use clap::{Parser, Subcommand}; // arg parsing
-use core::str;
-use rpassword;
-// password prompting
-use color_eyre::eyre::{self, Context, Result};
+use rpassword; // password prompting
+use passwords::{analyzer, scorer}; // password checking
+use color_eyre::eyre::{self, Context, Result};  // error handling
+use eyre::eyre; // error handling
+
 use std::{
     fs::{File, OpenOptions},
     io::Write,
-};
+}; // basic IO
 use std::{
-    io::{self, Read},
+    io::Read,
     path::Path,
-};
+}; // basic IO
 
 #[derive(Parser, Debug)]
 #[command(version="1.0", about="Simple program to encrypt/decrypt a file. Made by @ZizouChrist and @ResistantCorse", long_about=None)]
@@ -33,8 +34,8 @@ struct Args {
 enum Mode {
     /// Encrypt a file
     Encrypt {
-        #[clap(value_parser)]
-        files: Option<Vec<String>>,
+        #[clap(value_parser, required = true)]
+        files: Vec<String>,
 
         /// Output file
         #[arg(short, default_value_t = String::from("output.txt"))]
@@ -100,6 +101,7 @@ fn decrypt_file(
 
     // we need to extract the nonce
     let mut nonce_buff = [0_u8; NONCE_SIZE];
+
     input_file.read_exact(&mut nonce_buff).unwrap();
     let nonce = Nonce::from_slice(&nonce_buff[..12]);
 
@@ -113,15 +115,19 @@ fn decrypt_file(
         let deciphered_data = cipher
             .decrypt(nonce, &buffer[..read_count])
             .map_err(|e| eyre::eyre!(e))
-            .wrap_err("failed to decrypt")?;
+            .wrap_err("failed to decrypt (password probably incorrect)")?;
         output_file.write(&deciphered_data).unwrap();
 
-        if read_count != std::cmp::min(size_remaining, BUFFER_SIZE) {
+        size_remaining -= read_count;
+        if size_remaining == 0 {
             break;
         }
-        size_remaining -= read_count;
     }
     Ok(())
+}
+
+fn password_score(password: &str) -> f64 {
+    scorer::score(&analyzer::analyze(password))
 }
 
 // NOTE: La structure d'un fichier chiffré est la suivante: les 4 premiers octets sont pour le nombre de fichiers chiffrés
@@ -137,6 +143,11 @@ fn main() -> Result<()> {
     let password = rpassword::prompt_password("Enter the passphrase: ")
         .wrap_err("Error when reading password")?;
 
+    // check the password strength
+    if password_score(&password) < 40.0 { // we could even go as high as 80 (good)
+        return Err(eyre!("Password is too weak"));
+    }
+
     match args.mode {
         Mode::Encrypt { files, output } => {
             // open the output file
@@ -147,7 +158,8 @@ fn main() -> Result<()> {
                 .wrap_err("unable to create output file")?;
 
             // we write the number of files that we encrypted in the header
-            let number_of_files = files.as_ref().unwrap().len() as u32;
+            let number_of_files = files.len() as u32;
+
             let _ = output_file
                 .write_all(&number_of_files.to_le_bytes())
                 .wrap_err("unable to write number of files")?;
@@ -166,7 +178,7 @@ fn main() -> Result<()> {
                 .wrap_err("unable to write salt")?;
 
             // for each file we encrypt and we append it to the file
-            for input in files.unwrap() {
+            for input in files {
                 // we open the file
                 let mut input_file = OpenOptions::new()
                     .read(true)
@@ -185,7 +197,9 @@ fn main() -> Result<()> {
                 let _ = output_file
                     .write_all(&encrypted_file_length.to_le_bytes())
                     .wrap_err("unable to write file length")?;
+
                 encrypt_file(key.as_bytes(), &mut input_file, &mut output_file)?;
+
             }
         }
 
@@ -197,50 +211,45 @@ fn main() -> Result<()> {
                 .expect("Error when creating the output folder");
 
             // we open the input file
-            let mut _input_file: Result<File, io::Error> =
-                OpenOptions::new().read(true).open(&input);
+            let mut input_file = OpenOptions::new()
+                .read(true)
+                .open(&input)
+                .wrap_err("unable to open input file")?;
 
-            match _input_file {
-                Ok(mut input_file) => {
-                    // we get the number of file: the first 4 chars
-                    let mut number_of_files_buf = [0_u8; 4];
-                    input_file.read_exact(&mut number_of_files_buf).unwrap();
-                    let number_of_files = u32::from_le_bytes(number_of_files_buf);
+            // we get the number of file: the first 4 chars
+            let mut number_of_files_buf = [0_u8; 4];
 
-                    // we get the salt
-                    let mut salt_buff = [0_u8; 22];
-                    let _ = input_file
-                        .read_exact(&mut salt_buff)
-                        .expect("error when reading salt");
-                    let salt =
-                        SaltString::from_b64(std::str::from_utf8(&mut salt_buff).unwrap()).unwrap();
+            input_file.read_exact(&mut number_of_files_buf).unwrap();
+            let number_of_files = u32::from_le_bytes(number_of_files_buf);
 
-                    // derive a key from the password
-                    let hashed = Argon2::default()
-                        .hash_password(password.as_bytes(), &salt)
-                        .unwrap();
-                    let key = hashed.hash.unwrap();
+            // we get the salt
+            let mut salt_buff = [0_u8; 22];
+            let _ = input_file
+                .read_exact(&mut salt_buff)
+                .wrap_err("unable to read salt")?;
+            let salt = SaltString::from_b64(std::str::from_utf8(&mut salt_buff).unwrap()).unwrap();
 
-                    for i in 0..number_of_files {
-                        // we get the current file's length
-                        let mut file_size_buf = [0_u8; 8];
-                        input_file.read_exact(&mut file_size_buf).unwrap();
-                        let file_size = u64::from_le_bytes(file_size_buf);
+            // derive a key from the password
+            let hashed = Argon2::default()
+                .hash_password(password.as_bytes(), &salt)
+                .unwrap();
+            let key = hashed.hash.unwrap();
 
-                        // we open a new ouput file (file<i>.txt)
-                        let mut output_file = OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .create(true)
-                            .open(output_path.join(("file".to_owned()) + &(i.to_string()) + ".txt"))
-                            .expect("error when creating output file");
+            for i in 0..number_of_files {
+                // we get the current file's length
+                let mut file_size_buf = [0_u8; 8];
 
-                        decrypt_file(key.as_bytes(), &mut input_file, &mut output_file, file_size)?;
-                    }
-                }
-                Err(e) => {
-                    println!("Impossible to open file: {}, error : {}", input, e);
-                }
+                input_file.read_exact(&mut file_size_buf).unwrap();
+                let file_size = u64::from_le_bytes(file_size_buf);
+
+                // we open a new ouput file (file<i>.txt)
+                let mut output_file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .open(output_path.join(("file".to_owned()) + &(i.to_string()) + ".txt"))
+                    .wrap_err("unable to create output file")?;
+
+                decrypt_file(key.as_bytes(), &mut input_file, &mut output_file, file_size)?;
             }
         }
     }
